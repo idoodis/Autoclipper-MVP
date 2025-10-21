@@ -1,13 +1,14 @@
 {
 "name": "auto-clipper",
 "private": true,
-"packageManager": "pnpm@9",
+"packageManager": "pnpm@9.0.0",
 "scripts": {
 "dev": "tsx apps/web/dev-server.ts",
 "clip": "tsx apps/worker/src/clip.ts",
 "test": "vitest run"
 },
 "devDependencies": {
+"@ffmpeg-installer/ffmpeg": "^1.1.0",
 "tsx": "^4.15.7",
 "vitest": "^2.0.5",
 "typescript": "^5.6.2"
