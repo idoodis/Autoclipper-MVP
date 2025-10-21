@@ -2,6 +2,7 @@
 import { execa } from 'execa';
 import fs from 'node:fs';
 import path from 'node:path';
+import { path as ffmpegPath } from '@ffmpeg-installer/ffmpeg';
 import yargs from 'yargs';
 
 type KeepRegion = { start: number; end: number };
@@ -9,17 +10,13 @@ type Timeline = {
   keep: KeepRegion[];
   duration: number;
 };
-
-
 const argv = yargs(process.argv.slice(2))
-.option('vod', { type: 'string', demandOption: true })
-.option('out', { type: 'string', default: 'out' })
-.parseSync();
-
+  .option('vod', { type: 'string', demandOption: true })
+  .option('out', { type: 'string', default: 'out' })
+  .parseSync();
 
 const OUT = argv.out;
 fs.mkdirSync(OUT, { recursive: true });
-
 
 async function run(cmd: string, args: string[]) {
   console.log(`$ ${cmd} ${args.join(' ')}`);
@@ -78,40 +75,43 @@ function buildConcatFilter(keep: KeepRegion[], captionsPath: string): string {
   return [videoFilters, audioFilters, ...trims, concat].join(';');
 }
 
-
 (async () => {
-const tmpWav = path.join(OUT, 'audio.wav');
-await run('ffmpeg', ['-y', '-i', argv.vod, '-vn', '-ac', '1', '-ar', '16000', tmpWav]);
+  const tmpWav = path.join(OUT, 'audio.wav');
+  await run(ffmpegPath, ['-y', '-i', argv.vod, '-vn', '-ac', '1', '-ar', '16000', tmpWav]);
 
+  // 1) Deadspace detection (Python) → timeline.json
+  const timelinePath = path.join(OUT, 'timeline.json');
+  await run('python3', ['scripts/silence_detect.py', '--audio', tmpWav, '--out', timelinePath]);
 
-// 1) Deadspace detection (Python) → timeline.json
- const timelinePath = path.join(OUT, 'timeline.json');
- await run('python3', ['scripts/silence_detect.py', '--audio', tmpWav, '--out', timelinePath]);
+  // 2) Transcribe (Python) → captions.srt
+  const captionsPath = path.join(OUT, 'captions.srt');
+  await run('python3', ['scripts/transcribe.py', '--audio', tmpWav, '--srt', captionsPath]);
 
+  const timeline = loadTimeline(timelinePath);
+  const keepSegments = [...timeline.keep].sort((a, b) => a.start - b.start);
+  const filterGraph = buildConcatFilter(keepSegments, captionsPath);
 
-// 2) Transcribe (Python) → captions.srt
- const captionsPath = path.join(OUT, 'captions.srt');
- await run('python3', ['scripts/transcribe.py', '--audio', tmpWav, '--srt', captionsPath]);
-
- const timeline = loadTimeline(timelinePath);
- const keepSegments = [...timeline.keep].sort((a, b) => a.start - b.start);
- const filterGraph = buildConcatFilter(keepSegments, captionsPath);
-
-
-// 3) Render 9:16 with watermark + captions
-const clipOut = path.join(OUT, 'clip.mp4');
-await run('ffmpeg', [
-'-y', '-i', argv.vod,
-'-filter_complex', filterGraph,
-'-map', '[outv]',
-'-map', '[outa]',
-'-c:v', 'libx264',
-'-c:a', 'aac',
-'-preset', 'veryfast',
-'-t', '00:00:59',
-clipOut
-]);
-
-
-console.log('Done →', clipOut);
+  // 3) Render 9:16 with watermark + captions
+  const clipOut = path.join(OUT, 'clip.mp4');
+  await run(ffmpegPath, [
+    '-y',
+    '-i',
+    argv.vod,
+    '-filter_complex',
+    filterGraph,
+    '-map',
+    '[outv]',
+    '-map',
+    '[outa]',
+    '-c:v',
+    'libx264',
+    '-c:a',
+    'aac',
+    '-preset',
+    'veryfast',
+    '-t',
+    '00:00:59',
+    clipOut,
+  ]);
+  console.log('Done →', clipOut);
 })();
