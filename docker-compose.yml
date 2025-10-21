@@ -1,0 +1,25 @@
+version: '3.9'
+services:
+  api:
+    build: .
+    command: ["node", "apps/api/server.mjs"]
+    environment:
+      PORT: 3000
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin}
+      STATE_FILE: /data/state.json
+      STORAGE_ROOT: /data/jobs
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./storage:/data
+
+  worker:
+    build: .
+    command: ["node", "apps/worker/queueWorker.mjs"]
+    environment:
+      PORT: 3000
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin}
+      STATE_FILE: /data/state.json
+      STORAGE_ROOT: /data/jobs
+    volumes:
+      - ./storage:/data

@@ -1,4 +1,4 @@
-.PHONY: setup clip test
+.PHONY: setup clip test api worker
 
 
 setup:
@@ -6,7 +6,7 @@ setup:
 
 
 clip: samples/vod.mp4
-	node apps/worker/src/clip.mjs --vod samples/vod.mp4 --out out
+	npm run clip -- --vod samples/vod.mp4 --out out
 
 samples/vod.mp4:
 	node scripts/create_sample.mjs
@@ -14,3 +14,11 @@ samples/vod.mp4:
 
 test:
 	npm test
+
+
+api:
+	npm run api
+
+
+worker:
+	npm run worker
