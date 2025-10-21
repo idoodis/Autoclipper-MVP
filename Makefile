@@ -15,3 +15,4 @@ pnpm tsx apps/worker/src/clip.ts --vod samples/vod.mp4 --out out
 
 test:
 pnpm vitest run
+python3 -m unittest discover -s tests -p "test_*.py"
