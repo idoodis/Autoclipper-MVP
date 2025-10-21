@@ -4,12 +4,14 @@
   "packageManager": "npm@11.4.2",
   "scripts": {
     "clip": "node apps/worker/src/clip.mjs",
+    "api": "node apps/api/server.mjs",
+    "worker": "node apps/worker/queueWorker.mjs",
     "test": "vitest run"
   },
   "devDependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "vitest": "^2.0.5",
-    "typescript": "^5.6.2"
+    "typescript": "^5.6.2",
+    "vitest": "^2.0.5"
   },
   "dependencies": {
     "execa": "^9.3.0",

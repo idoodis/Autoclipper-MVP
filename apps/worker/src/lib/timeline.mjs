@@ -11,13 +11,17 @@ export function formatTime(value) {
 }
 
 export function normalizeRegions(regions) {
-  return (regions || [])
-    .filter((region) =>
-      region &&
-      isFiniteNumber(region.start) &&
-      isFiniteNumber(region.end) &&
-      region.end > region.start
-    )
+  return (Array.isArray(regions) ? regions : [])
+    .filter((region) => {
+      return (
+        !!region &&
+        typeof region.start === 'number' &&
+        typeof region.end === 'number' &&
+        Number.isFinite(region.start) &&
+        Number.isFinite(region.end) &&
+        region.end > region.start
+      );
+    })
     .map((region) => ({
       start: Number(region.start),
       end: Number(region.end),
@@ -28,15 +32,15 @@ export function normalizeRegions(regions) {
 
 export function loadTimeline(timelinePath) {
   const rawData = fs.readFileSync(timelinePath, 'utf8');
-  const data = JSON.parse(rawData);
+  const data = JSON.parse(rawData) || {};
   const duration = isFiniteNumber(data?.duration) ? data.duration : 0;
-  const keep = normalizeRegions(Array.isArray(data?.keep) ? data.keep : []);
+  const keep = normalizeRegions(data?.keep);
 
   if (keep.length > 0) {
     return {
       duration,
       keep,
-      candidates: Array.isArray(data?.candidates) ? normalizeRegions(data.candidates) : undefined,
+      candidates: data?.candidates ? normalizeRegions(data.candidates) : undefined,
       parameters: data?.parameters,
     };
   }
@@ -45,7 +49,7 @@ export function loadTimeline(timelinePath) {
   return {
     duration,
     keep: [{ start: 0, end: fallbackEnd }],
-    candidates: Array.isArray(data?.candidates) ? normalizeRegions(data.candidates) : undefined,
+    candidates: data?.candidates ? normalizeRegions(data.candidates) : undefined,
     parameters: data?.parameters,
   };
 }

@@ -9,7 +9,7 @@ function escapeFilterPath(input) {
     .replace(/ /g, '\\ ');
 }
 
-export function buildConcatFilter(keep, captionsPath) {
+export function buildConcatFilter(keep, captionsPath, watermarkText) {
   if (keep.length === 0) {
     throw new Error('Timeline did not produce any keep regions');
   }
@@ -18,7 +18,8 @@ export function buildConcatFilter(keep, captionsPath) {
   const videoSplitOutputs = keep.map((_, idx) => `[vpre${idx}]`).join('');
   const audioSplitOutputs = keep.map((_, idx) => `[apre${idx}]`).join('');
 
-  const watermark = "drawtext=text='AutoClipper':fontcolor=white:fontsize=48:box=1:boxcolor=0x00000090:x=40:y=40";
+  const escapedWatermark = watermarkText.replace(/:/g, '\\:').replace(/,/g, '\\,').replace(/'/g, "\\'");
+  const watermark = `drawtext=text='${escapedWatermark}':fontcolor=white:fontsize=48:box=1:boxcolor=0x00000090:x=40:y=40`;
   const baseVideoFilter =
     `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,` +
     `subtitles=${escapedCaptions},${watermark},split=${keep.length}${videoSplitOutputs}`;
