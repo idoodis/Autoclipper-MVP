@@ -2,6 +2,7 @@
 import { execa } from 'execa';
 import fs from 'node:fs';
 import path from 'node:path';
+import { path as ffmpegPath } from '@ffmpeg-installer/ffmpeg';
 import yargs from 'yargs';
 
 
@@ -16,14 +17,14 @@ fs.mkdirSync(OUT, { recursive: true });
 
 
 async function run(cmd: string, args: string[]) {
-console.log(`$ ${cmd} ${args.join(' ')}`);
-await execa(cmd, args, { stdio: 'inherit' });
+  console.log(`$ ${cmd} ${args.join(' ')}`);
+  await execa(cmd, args, { stdio: 'inherit' });
 }
 
 
 (async () => {
 const tmpWav = path.join(OUT, 'audio.wav');
-await run('ffmpeg', ['-y', '-i', argv.vod, '-vn', '-ac', '1', '-ar', '16000', tmpWav]);
+  await run(ffmpegPath, ['-y', '-i', argv.vod, '-vn', '-ac', '1', '-ar', '16000', tmpWav]);
 
 
 // 1) Deadspace detection (Python) → timeline.json
@@ -36,7 +37,7 @@ await run('python3', ['scripts/transcribe.py', '--audio', tmpWav, '--srt', path.
 
 // 3) Render 9:16 with watermark + captions
 const clipOut = path.join(OUT, 'clip.mp4');
-await run('ffmpeg', [
+  await run(ffmpegPath, [
 '-y', '-i', argv.vod,
 '-i', path.join(OUT, 'captions.srt'),
 '-vf', 'scale=1080:-2,transpose=1,subtitles=' + path.join(OUT, 'captions.srt').replace(/:/g, '\\:'),
