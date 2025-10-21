@@ -2,19 +2,15 @@
 
 
 setup:
-corepack enable || true
-pnpm -v || npm i -g pnpm
-pnpm install
-python3 -m venv .venv || true
-. .venv/bin/activate && pip install -r requirements.txt || true
+	npm install
 
 
 clip: samples/vod.mp4
-\tpnpm tsx apps/worker/src/clip.ts --vod samples/vod.mp4 --out out
+	node apps/worker/src/clip.mjs --vod samples/vod.mp4 --out out
 
 samples/vod.mp4:
-\tpnpm tsx scripts/create_sample.ts
+	node scripts/create_sample.mjs
 
 
 test:
-pnpm vitest run
+	npm test

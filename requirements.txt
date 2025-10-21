@@ -1,3 +1,2 @@
-webrtcvad==2.0.10
-pydub==0.25.1
-faster-whisper==1.0.0
+# Core pipeline relies on standard library and FFmpeg.
+# Optional: install faster-whisper==1.0.0 for high-quality captions.
