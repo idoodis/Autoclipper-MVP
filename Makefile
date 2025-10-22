@@ -1,4 +1,4 @@
-.PHONY: setup clip test api worker
+.PHONY: setup clip test api worker dashboard
 
 
 setup:
@@ -22,3 +22,6 @@ api:
 
 worker:
 	npm run worker
+
+dashboard:
+	npm run dashboard
