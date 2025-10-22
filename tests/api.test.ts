@@ -1,3 +1,4 @@
+import { createTenant } from '../packages/state/index.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,16 +79,8 @@ describe('API server', () => {
     });
     expect(tenantRes.status).toBe(401);
 
-    const createRes = await fetch(`${baseUrl}/v1/tenants`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-admin-token': ADMIN_TOKEN,
-      },
-      body: JSON.stringify({ name: 'Tenant' }),
-    });
-    expect(createRes.status).toBe(201);
-    const { apiKey } = await createRes.json();
+    const seeded = await createTenant(process.env.STATE_FILE, 'Tenant');
+    const apiKey = seeded.apiKey;
 
     const unauthorizedJob = await fetch(`${baseUrl}/v1/jobs`, {
       method: 'POST',

@@ -12,7 +12,6 @@ import { clampKeepRegions, loadTimeline, saveTimeline, totalDuration } from './l
 const DEFAULT_MAX_DURATION_SECONDS = 59;
 
 async function run(cmd, args, cwd) {
-  // eslint-disable-next-line no-console
   console.log(`$ ${cmd} ${args.join(' ')}`);
   await execa(cmd, args, { stdio: 'inherit', cwd });
 }
@@ -32,6 +31,7 @@ export async function createClip(options) {
     watermarkText = 'AutoClipper',
     silenceScript = path.join(projectRoot, 'scripts', 'silence_detect.py'),
     transcriptionScript = path.join(projectRoot, 'scripts', 'transcribe.py'),
+    highlightScript = path.join(projectRoot, 'scripts', 'highlight_rank.py'),
     captionsModel,
     transcriptionDevice,
   } = options;
@@ -42,11 +42,7 @@ export async function createClip(options) {
   await run(ffmpegPath, ['-y', '-i', vodPath, '-vn', '-ac', '1', '-ar', '16000', tmpAudioPath]);
 
   const timelinePath = path.join(outDir, 'timeline.json');
-  await run(
-    'python3',
-    [silenceScript, '--audio', tmpAudioPath, '--out', timelinePath],
-    projectRoot,
-  );
+  await run('python3', [silenceScript, '--audio', tmpAudioPath, '--out', timelinePath], projectRoot);
 
   const captionsPath = path.join(outDir, 'captions.srt');
   const transcriptionArgs = ['--audio', tmpAudioPath, '--srt', captionsPath];
@@ -57,6 +53,20 @@ export async function createClip(options) {
     transcriptionArgs.push('--device', transcriptionDevice);
   }
   await run('python3', [transcriptionScript, ...transcriptionArgs], projectRoot);
+
+  await run(
+    'python3',
+    [
+      highlightScript,
+      '--timeline',
+      timelinePath,
+      '--captions',
+      captionsPath,
+      '--max-duration',
+      String(maxDurationSeconds),
+    ],
+    projectRoot,
+  );
 
   const timeline = loadTimeline(timelinePath);
   const clippedKeep = clampKeepRegions(timeline.keep, maxDurationSeconds);
@@ -109,9 +119,7 @@ export async function createClip(options) {
     clipOut,
   ]);
 
-  // eslint-disable-next-line no-console
   console.log('Clip duration', totalKeepDuration.toFixed(3), 'seconds');
-  // eslint-disable-next-line no-console
   console.log('Done →', clipOut);
 
   return {

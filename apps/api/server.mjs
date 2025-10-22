@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { parse } from 'node:url';
+
 import { loadConfig } from '../config.mjs';
 import {
   initState,
@@ -11,7 +12,7 @@ import {
 } from '../../packages/state/index.mjs';
 
 const config = loadConfig();
-initState(config.stateFile);
+const stateReady = initState(config.stateFile);
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -39,82 +40,97 @@ async function readBody(req) {
 }
 
 export function createApiServer() {
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
+    await stateReady;
     const { pathname } = parse(req.url || '/', true);
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'access-control-allow-origin': '*',
-      'access-control-allow-headers': 'content-type,x-api-key,x-admin-token',
-      'access-control-allow-methods': 'GET,POST,OPTIONS',
-    });
-    return res.end();
-  }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-headers': 'content-type,x-api-key,x-admin-token',
+        'access-control-allow-methods': 'GET,POST,OPTIONS',
+      });
+      return res.end();
+    }
 
-  if (pathname === '/healthz' && req.method === 'GET') {
-    return sendJson(res, 200, { status: 'ok' });
-  }
+    if (pathname === '/healthz' && req.method === 'GET') {
+      return sendJson(res, 200, { status: 'ok' });
+    }
 
-  if (pathname === '/v1/tenants' && req.method === 'POST') {
-    if (req.headers['x-admin-token'] !== config.adminToken) {
-      return sendJson(res, 401, { error: 'Missing or invalid admin token' });
+    if (pathname === '/v1/tenants' && req.method === 'POST') {
+      if (req.headers['x-admin-token'] !== config.adminToken) {
+        return sendJson(res, 401, { error: 'Missing or invalid admin token' });
+      }
+      const body = (await readBody(req)) || {};
+      if (!body.name || typeof body.name !== 'string') {
+        return sendJson(res, 400, { error: 'name is required' });
+      }
+      const tenant = await createTenant(config.stateFile, body.name.trim());
+      return sendJson(res, 201, {
+        tenant: { id: tenant.id, name: tenant.name, createdAt: tenant.createdAt },
+        apiKey: tenant.apiKey,
+      });
     }
-    const body = (await readBody(req)) || {};
-    if (!body.name || typeof body.name !== 'string') {
-      return sendJson(res, 400, { error: 'name is required' });
-    }
-    const tenant = createTenant(config.stateFile, body.name.trim());
-    return sendJson(res, 201, { tenant: { id: tenant.id, name: tenant.name, createdAt: tenant.createdAt }, apiKey: tenant.apiKey });
-  }
 
-  if (pathname === '/v1/jobs' && req.method === 'POST') {
-    const apiKey = req.headers['x-api-key'];
-    const tenant = typeof apiKey === 'string' ? findTenantByApiKey(config.stateFile, apiKey) : null;
-    if (!tenant) {
-      return sendJson(res, 401, { error: 'Invalid API key' });
+    if (pathname === '/v1/jobs' && req.method === 'POST') {
+      const apiKey = req.headers['x-api-key'];
+      const tenant =
+        typeof apiKey === 'string' ? await findTenantByApiKey(config.stateFile, apiKey) : null;
+      if (!tenant) {
+        return sendJson(res, 401, { error: 'Invalid API key' });
+      }
+      const body = (await readBody(req)) || {};
+      if (!body.sourceUri || typeof body.sourceUri !== 'string') {
+        return sendJson(res, 400, { error: 'sourceUri is required' });
+      }
+      const watermarkText =
+        typeof body.watermarkText === 'string' && body.watermarkText.trim().length > 0
+          ? body.watermarkText.trim()
+          : tenant.name;
+      const maxDuration = Number.isFinite(body.maxDurationSeconds)
+        ? Math.max(5, Math.min(120, Number(body.maxDurationSeconds)))
+        : 59;
+      const job = await createJob(config.stateFile, {
+        tenantId: tenant.id,
+        sourceUri: body.sourceUri,
+        watermarkText,
+        maxDurationSeconds: maxDuration,
+        metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : {},
+      });
+      return sendJson(res, 202, { job });
     }
-    const body = (await readBody(req)) || {};
-    if (!body.sourceUri || typeof body.sourceUri !== 'string') {
-      return sendJson(res, 400, { error: 'sourceUri is required' });
-    }
-    const watermarkText = typeof body.watermarkText === 'string' && body.watermarkText.trim().length > 0 ? body.watermarkText.trim() : tenant.name;
-    const maxDuration = Number.isFinite(body.maxDurationSeconds) ? Math.max(5, Math.min(120, Number(body.maxDurationSeconds))) : 59;
-    const job = createJob(config.stateFile, {
-      tenantId: tenant.id,
-      sourceUri: body.sourceUri,
-      watermarkText,
-      maxDurationSeconds: maxDuration,
-      metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : {},
-    });
-    return sendJson(res, 202, { job });
-  }
 
-  if (pathname === '/v1/jobs' && req.method === 'GET') {
-    const apiKey = req.headers['x-api-key'];
-    const tenant = typeof apiKey === 'string' ? findTenantByApiKey(config.stateFile, apiKey) : null;
-    if (!tenant) {
-      return sendJson(res, 401, { error: 'Invalid API key' });
+    if (pathname === '/v1/jobs' && req.method === 'GET') {
+      const apiKey = req.headers['x-api-key'];
+      const tenant =
+        typeof apiKey === 'string' ? await findTenantByApiKey(config.stateFile, apiKey) : null;
+      if (!tenant) {
+        return sendJson(res, 401, { error: 'Invalid API key' });
+      }
+      const jobs = await listJobs(config.stateFile, tenant.id);
+      return sendJson(res, 200, { jobs });
     }
-    const jobs = listJobs(config.stateFile, tenant.id);
-    return sendJson(res, 200, { jobs });
-  }
 
-  if (pathname && pathname.startsWith('/v1/jobs/') && req.method === 'GET') {
-    const apiKey = req.headers['x-api-key'];
-    const tenant = typeof apiKey === 'string' ? findTenantByApiKey(config.stateFile, apiKey) : null;
-    if (!tenant) {
-      return sendJson(res, 401, { error: 'Invalid API key' });
+    if (pathname && pathname.startsWith('/v1/jobs/') && req.method === 'GET') {
+      const apiKey = req.headers['x-api-key'];
+      const tenant =
+        typeof apiKey === 'string' ? await findTenantByApiKey(config.stateFile, apiKey) : null;
+      if (!tenant) {
+        return sendJson(res, 401, { error: 'Invalid API key' });
+      }
+      const jobId = pathname.split('/').pop();
+      const job = jobId ? await getJob(config.stateFile, jobId) : null;
+      if (!job || job.tenantId !== tenant.id) {
+        return sendJson(res, 404, { error: 'Job not found' });
+      }
+      return sendJson(res, 200, { job });
     }
-    const jobId = pathname.split('/').pop();
-    const job = jobId ? getJob(config.stateFile, jobId) : null;
-    if (!job || job.tenantId !== tenant.id) {
-      return sendJson(res, 404, { error: 'Job not found' });
-    }
-    return sendJson(res, 200, { job });
-  }
 
     sendJson(res, 404, { error: 'Not found' });
   });
+  server.keepAliveTimeout = 0;
+  server.headersTimeout = Math.max(server.headersTimeout, 60_000);
+  return server;
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
