@@ -2,3 +2,4 @@ node_modules/
 out/
 .venv/
 *.log
+samples/*.mp4

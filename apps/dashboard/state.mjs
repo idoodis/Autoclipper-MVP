@@ -1,41 +1,25 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
+import path from 'node:path';
+
+import { initStore, loadStore, withStore } from '../../packages/storage/jsonStore.mjs';
+
+const DEFAULT_STATE = { users: [] };
 
 let stateFilePath = '';
-let state = { users: [] };
 
-function persist() {
-  if (!stateFilePath) {
-    throw new Error('State not initialized');
+function resolveStatePath(filePath) {
+  if (!filePath) {
+    throw new Error('Dashboard state file path is not set');
   }
-  fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2));
+  return path.resolve(filePath);
 }
 
-export function initUserState(filePath) {
-  stateFilePath = filePath;
-  fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
-  if (fs.existsSync(stateFilePath)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
-      if (data && Array.isArray(data.users)) {
-        state = { users: data.users };
-      } else {
-        state = { users: [] };
-        persist();
-      }
-    } catch (error) {
-      console.warn('Failed to load dashboard state, starting fresh:', error);
-      state = { users: [] };
-      persist();
-    }
-  } else {
-    state = { users: [] };
-    persist();
-  }
+export async function initUserState(filePath) {
+  stateFilePath = resolveStatePath(filePath);
+  await initStore(stateFilePath, DEFAULT_STATE);
 }
 
-export function createUser({ name, email, passwordHash, tenantId, apiKey }) {
+export async function createUser({ name, email, passwordHash, tenantId, apiKey }) {
   const now = new Date().toISOString();
   const user = {
     id: crypto.randomUUID(),
@@ -47,16 +31,19 @@ export function createUser({ name, email, passwordHash, tenantId, apiKey }) {
     createdAt: now,
     updatedAt: now,
   };
-  state.users.push(user);
-  persist();
+  await withStore(stateFilePath, DEFAULT_STATE, (state) => {
+    state.users.push(user);
+  });
   return user;
 }
 
-export function findUserByEmail(email) {
+export async function findUserByEmail(email) {
+  const state = await loadStore(stateFilePath, DEFAULT_STATE);
   return state.users.find((user) => user.email === email.toLowerCase()) || null;
 }
 
-export function findUserById(id) {
+export async function findUserById(id) {
+  const state = await loadStore(stateFilePath, DEFAULT_STATE);
   return state.users.find((user) => user.id === id) || null;
 }
 

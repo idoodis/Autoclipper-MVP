@@ -1,5 +1,6 @@
 import argparse
 import audioop
+import statistics
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,20 @@ def read_pcm_frames(path: Path, frame_ms: int = 30) -> tuple[List[bytes], int]:
     return frames, rate
 
 
+def describe_energy(level: float, variance: float) -> str:
+    if level > 0.85:
+        return "Explosive moment"
+    if level > 0.65:
+        return "High-energy highlight"
+    if level > 0.45:
+        return "Energetic beat"
+    if level > 0.3:
+        return "Spoken passage"
+    if variance > 0.08:
+        return "Dynamic ambience"
+    return "Quiet ambience"
+
+
 def fallback_transcribe(audio_path: Path) -> list[CaptionSegment]:
     frames, rate = read_pcm_frames(audio_path)
     if not frames:
@@ -68,43 +83,64 @@ def fallback_transcribe(audio_path: Path) -> list[CaptionSegment]:
 
     energies = [audioop.rms(frame, 2) for frame in frames]
     max_energy = max(energies) or 1
-    threshold = max(int(max_energy * 0.15), 300)
+    mean_energy = statistics.fmean(energies)
+    stdev_energy = statistics.pstdev(energies) if len(energies) > 1 else 0.0
+    threshold = max(int(mean_energy * 0.75), int(max_energy * 0.18), 180)
 
     segments: list[CaptionSegment] = []
     frame_duration = len(frames[0]) / 2 / rate
     start_idx: Optional[int] = None
+    accumulator: List[int] = []
+
     for idx, energy in enumerate(energies):
         if energy >= threshold:
             if start_idx is None:
                 start_idx = idx
+                accumulator = []
+            accumulator.append(energy)
         else:
             if start_idx is not None:
                 end_idx = idx
                 start_time = start_idx * frame_duration
                 end_time = end_idx * frame_duration
-                if end_time - start_time >= 0.5:
+                if end_time - start_time >= 0.45:
+                    local_mean = statistics.fmean(accumulator) if accumulator else mean_energy
+                    level = min(1.0, local_mean / max_energy)
+                    variance = stdev_energy / max(mean_energy, 1e-6)
+                    text = describe_energy(level, variance)
                     segments.append(
                         CaptionSegment(
                             index=len(segments) + 1,
                             start=start_time,
                             end=end_time,
-                            text="[audio]",
+                            text=text,
                         )
                     )
                 start_idx = None
+                accumulator = []
 
     if start_idx is not None:
         start_time = start_idx * frame_duration
         end_time = len(frames) * frame_duration
-        if end_time - start_time >= 0.5:
+        if end_time - start_time >= 0.45:
+            local_mean = statistics.fmean(accumulator) if accumulator else mean_energy
+            level = min(1.0, local_mean / max_energy)
+            variance = stdev_energy / max(mean_energy, 1e-6)
+            text = describe_energy(level, variance)
             segments.append(
                 CaptionSegment(
                     index=len(segments) + 1,
                     start=start_time,
                     end=end_time,
-                    text="[audio]",
+                    text=text,
                 )
             )
+
+    if not segments:
+        text = describe_energy(min(1.0, mean_energy / max_energy), stdev_energy / max(mean_energy, 1e-6))
+        segments.append(
+            CaptionSegment(index=1, start=0.0, end=len(frames) * frame_duration, text=text)
+        )
 
     return segments
 
@@ -120,10 +156,16 @@ def main() -> None:
     captions: list[CaptionSegment]
 
     if WhisperModel is None:
-        print("Warning: faster-whisper not available, using energy-based fallback captions.")
+        print(
+            "Warning: faster-whisper not available, using energy-based descriptive captions. Install faster-whisper for speech-to-text.",
+        )
         captions = fallback_transcribe(Path(args.audio))
     else:
-        model = WhisperModel(args.model, device=args.device, compute_type="int8" if args.device == "cpu" else "float16")
+        model = WhisperModel(
+            args.model,
+            device=args.device,
+            compute_type="int8" if args.device == "cpu" else "float16",
+        )
         segments, _ = model.transcribe(
             args.audio,
             vad_filter=True,

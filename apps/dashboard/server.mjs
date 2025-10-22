@@ -6,6 +6,12 @@ import crypto from 'node:crypto';
 
 import { loadDashboardConfig } from './config.mjs';
 import { createUser, findUserByEmail, findUserById, initUserState, toPublicUser } from './state.mjs';
+import {
+  initSessionStore,
+  createSession as createSessionRecord,
+  getSession as getSessionRecord,
+  deleteSession as deleteSessionRecord,
+} from '../../packages/session/index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, 'public');
@@ -16,10 +22,11 @@ if (!config.adminToken) {
   console.warn('Warning: ADMIN_TOKEN not set. User registration will fail.');
 }
 
-initUserState(config.stateFile);
+await initUserState(config.stateFile);
+await initSessionStore(config.sessionStoreFile);
 fs.mkdirSync(config.uploadDir, { recursive: true });
 
-const sessions = new Map();
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
 
 function signSession(sessionId) {
   return crypto.createHmac('sha256', config.sessionSecret).update(sessionId).digest('hex');
@@ -36,22 +43,21 @@ function appendCookie(res, cookie) {
   }
 }
 
-function createSession(res, userId) {
-  const sessionId = crypto.randomUUID();
-  sessions.set(sessionId, { userId, createdAt: Date.now() });
+async function createSession(res, userId) {
+  const sessionId = await createSessionRecord(config.sessionStoreFile, userId, SESSION_TTL_MS);
   const cookieValue = `${sessionId}.${signSession(sessionId)}`;
   appendCookie(
     res,
-    `sid=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24}`,
+    `sid=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   );
 }
 
-function destroySession(req, res) {
+async function destroySession(req, res) {
   const cookie = parseCookies(req).sid;
   if (cookie) {
     const [sessionId] = cookie.split('.');
     if (sessionId) {
-      sessions.delete(sessionId);
+      await deleteSessionRecord(config.sessionStoreFile, sessionId);
     }
   }
   appendCookie(res, 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
@@ -69,17 +75,19 @@ function parseCookies(req) {
   }, {});
 }
 
-function getSessionUser(req) {
+async function getSessionUser(req) {
   const raw = parseCookies(req).sid;
   if (!raw) return null;
   const [sessionId, signature] = raw.split('.');
   if (!sessionId || !signature) return null;
   if (signSession(sessionId) !== signature) return null;
-  const session = sessions.get(sessionId);
-  if (!session) return null;
-  const user = findUserById(session.userId);
+  const session = await getSessionRecord(config.sessionStoreFile, sessionId);
+  if (!session) {
+    return null;
+  }
+  const user = await findUserById(session.userId);
   if (!user) {
-    sessions.delete(sessionId);
+    await deleteSessionRecord(config.sessionStoreFile, sessionId);
     return null;
   }
   return user;
@@ -163,8 +171,8 @@ function saveUpload(upload) {
   return targetPath;
 }
 
-function ensureAuth(req, res) {
-  const user = getSessionUser(req);
+async function ensureAuth(req, res) {
+  const user = await getSessionUser(req);
   if (!user) {
     sendJson(res, 401, { error: 'Unauthorized' });
     return null;
@@ -203,24 +211,20 @@ async function handleRegister(req, res) {
     return sendJson(res, 400, { error: 'Invalid JSON body' });
   }
   const { name, email, password } = body;
-  if (!name || typeof name !== 'string' || name.trim().length < 2) {
-    return sendJson(res, 400, { error: 'Name must be at least 2 characters' });
+  if (!name || !email || !password) {
+    return sendJson(res, 400, { error: 'Name, email, and password are required' });
   }
-  if (!email || typeof email !== 'string' || !email.includes('@')) {
-    return sendJson(res, 400, { error: 'Valid email is required' });
+  if (typeof email !== 'string' || typeof password !== 'string' || typeof name !== 'string') {
+    return sendJson(res, 400, { error: 'Invalid payload' });
   }
-  if (!password || typeof password !== 'string' || password.length < 8) {
-    return sendJson(res, 400, { error: 'Password must be at least 8 characters' });
-  }
-  if (!config.adminToken) {
-    return sendJson(res, 500, { error: 'Server missing ADMIN_TOKEN configuration' });
-  }
-  if (findUserByEmail(email)) {
-    return sendJson(res, 409, { error: 'Email already registered' });
-  }
-
   try {
-    const tenantResponse = await fetch(`${config.apiBaseUrl}/v1/tenants`, {
+    const existing = await findUserByEmail(email);
+    if (existing) {
+      return sendJson(res, 409, { error: 'Email already registered' });
+    }
+
+    const passwordHash = await hashPassword(password);
+    const response = await fetch(`${config.apiBaseUrl}/v1/tenants`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -228,23 +232,19 @@ async function handleRegister(req, res) {
       },
       body: JSON.stringify({ name: name.trim() }),
     });
-    if (!tenantResponse.ok) {
-      const payload = await tenantResponse.json().catch(() => ({}));
-      return sendJson(res, 502, {
-        error: 'Failed to provision tenant',
-        details: payload.error || tenantResponse.statusText,
-      });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      return sendJson(res, response.status, { error: body.error || 'Failed to create tenant' });
     }
-    const { tenant, apiKey } = await tenantResponse.json();
-    const passwordHash = await hashPassword(password);
-    const user = createUser({
+    const { tenant, apiKey } = await response.json();
+    const user = await createUser({
       name: name.trim(),
       email: email.toLowerCase(),
       passwordHash,
       tenantId: tenant.id,
       apiKey,
     });
-    createSession(res, user.id);
+    await createSession(res, user.id);
     return sendJson(res, 201, { user: toPublicUser(user) });
   } catch (error) {
     console.error('Registration failed', error);
@@ -261,7 +261,7 @@ async function handleLogin(req, res) {
   if (!email || typeof email !== 'string' || !password || typeof password !== 'string') {
     return sendJson(res, 400, { error: 'Email and password are required' });
   }
-  const user = findUserByEmail(email);
+  const user = await findUserByEmail(email);
   if (!user) {
     return sendJson(res, 401, { error: 'Invalid credentials' });
   }
@@ -270,7 +270,7 @@ async function handleLogin(req, res) {
     if (!valid) {
       return sendJson(res, 401, { error: 'Invalid credentials' });
     }
-    createSession(res, user.id);
+    await createSession(res, user.id);
     return sendJson(res, 200, { user: toPublicUser(user) });
   } catch (error) {
     console.error('Login failed', error);
@@ -339,133 +339,112 @@ async function proxyJobs(req, res, user, jobId, fileType) {
       const body = await response.json().catch(() => ({}));
       return sendJson(res, response.status, { error: body.error || 'Failed to fetch jobs' });
     }
-    if (!fileType) {
-      const body = await response.json();
-      return sendJson(res, 200, body);
-    }
-    const { job } = await response.json();
-    if (!job || job.status !== 'completed' || !job.output) {
-      return sendJson(res, 400, { error: 'Job is not completed yet' });
-    }
-    const filePath = job.output[fileType];
-    if (!filePath || !fs.existsSync(filePath)) {
-      return sendJson(res, 404, { error: 'File not found' });
-    }
-    const stream = fs.createReadStream(filePath);
-    stream.on('open', () => {
-      const stats = fs.statSync(filePath);
+    if (fileType) {
+      const job = await response.json();
+      const target = job?.job;
+      if (!target || !target.output || !target.output[fileType]) {
+        return sendJson(res, 404, { error: 'Artifact not available yet' });
+      }
+      const artifactPath = target.output[fileType];
+      if (!fs.existsSync(artifactPath)) {
+        return sendJson(res, 404, { error: 'Artifact missing on disk' });
+      }
+      const stat = fs.statSync(artifactPath);
       res.writeHead(200, {
-        'content-length': stats.size,
-        'content-type': getContentType(filePath),
-        'content-disposition': `attachment; filename="${path.basename(filePath)}"`,
+        'content-type': getContentType(artifactPath),
+        'content-length': stat.size,
       });
-      stream.pipe(res);
-    });
-    stream.on('error', (err) => {
-      console.error('Failed to read job file', err);
-      sendJson(res, 500, { error: 'Error streaming file' });
-    });
+      fs.createReadStream(artifactPath).pipe(res);
+      return;
+    }
+    const body = await response.json();
+    return sendJson(res, 200, body);
   } catch (error) {
-    console.error('Failed to proxy jobs', error);
-    return sendJson(res, 500, { error: 'Unexpected error when fetching jobs' });
+    console.error('Proxy request failed', error);
+    return sendJson(res, 500, { error: 'Unexpected proxy error' });
   }
 }
 
-function serveStatic(req, res, pathname) {
-  let filePath = path.normalize(path.join(publicRoot, pathname));
-  if (pathname === '/' || pathname === '') {
-    filePath = path.join(publicRoot, 'index.html');
-  }
+function serveStatic(req, res) {
+  const filePath = path.join(publicRoot, req.url === '/' ? 'index.html' : req.url.replace(/^\//, ''));
   if (!filePath.startsWith(publicRoot)) {
-    return sendJson(res, 404, { error: 'Not found' });
+    res.writeHead(403);
+    res.end('Forbidden');
+    return;
   }
-  fs.stat(filePath, (err, stats) => {
-    if (err || !stats.isFile()) {
-      if (!pathname.startsWith('/api/')) {
-        const fallback = path.join(publicRoot, 'index.html');
-        fs.createReadStream(fallback)
-          .on('open', () => {
-            res.writeHead(200, { 'content-type': getContentType(fallback) });
-          })
-          .on('error', () => sendJson(res, 404, { error: 'Not found' }))
-          .pipe(res);
-      } else {
-        sendJson(res, 404, { error: 'Not found' });
-      }
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404);
+      res.end('Not found');
       return;
     }
-    const stream = fs.createReadStream(filePath);
-    stream.on('open', () => {
-      res.writeHead(200, { 'content-type': getContentType(filePath) });
-      stream.pipe(res);
-    });
-    stream.on('error', () => sendJson(res, 500, { error: 'Failed to read file' }));
+    res.writeHead(200, { 'content-type': getContentType(filePath) });
+    res.end(data);
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-  const { pathname } = url;
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'access-control-allow-origin': '*',
-      'access-control-allow-headers': 'content-type',
-      'access-control-allow-methods': 'GET,POST,OPTIONS',
-    });
-    res.end();
-    return;
-  }
-
-  if (pathname.startsWith('/api/')) {
-    if (pathname === '/api/session' && req.method === 'GET') {
-      const user = getSessionUser(req);
-      return sendJson(res, 200, { user: toPublicUser(user) });
-    }
-    if (pathname === '/api/auth/register' && req.method === 'POST') {
-      return handleRegister(req, res);
-    }
-    if (pathname === '/api/auth/login' && req.method === 'POST') {
-      return handleLogin(req, res);
-    }
-    if (pathname === '/api/auth/logout' && req.method === 'POST') {
-      destroySession(req, res);
-      return sendJson(res, 200, { ok: true });
+export function createDashboardServer() {
+  return http.createServer(async (req, res) => {
+    const { url, method } = req;
+    if (!url || !method) {
+      res.writeHead(400);
+      return res.end('Bad request');
     }
 
-    const user = ensureAuth(req, res);
-    if (!user) {
+    if (url.startsWith('/api/')) {
+      if (url === '/api/auth/register' && method === 'POST') {
+        return handleRegister(req, res);
+      }
+      if (url === '/api/auth/login' && method === 'POST') {
+        return handleLogin(req, res);
+      }
+      if (url === '/api/auth/logout' && method === 'POST') {
+        await destroySession(req, res);
+        return sendJson(res, 200, { success: true });
+      }
+      if (url === '/api/session' && method === 'GET') {
+        const user = await getSessionUser(req);
+        if (!user) {
+          return sendJson(res, 401, { error: 'Unauthorized' });
+        }
+        return sendJson(res, 200, { user: toPublicUser(user) });
+      }
+      if (url === '/api/jobs' && method === 'POST') {
+        const user = await ensureAuth(req, res);
+        if (!user) return;
+        return handleCreateJob(req, res, user);
+      }
+      if (url === '/api/jobs' && method === 'GET') {
+        const user = await ensureAuth(req, res);
+        if (!user) return;
+        return proxyJobs(req, res, user);
+      }
+      if (url.startsWith('/api/jobs/') && method === 'GET') {
+        const user = await ensureAuth(req, res);
+        if (!user) return;
+        const [, , , jobId, files, artifact] = url.split('/');
+        if (files === 'files' && artifact) {
+          return proxyJobs(req, res, user, jobId, artifact);
+        }
+        return proxyJobs(req, res, user, jobId);
+      }
+      res.writeHead(404);
+      res.end('Not found');
       return;
     }
 
-    if (pathname === '/api/jobs' && req.method === 'POST') {
-      return handleCreateJob(req, res, user);
+    if (method === 'GET') {
+      return serveStatic(req, res);
     }
 
-    if (pathname === '/api/jobs' && req.method === 'GET') {
-      return proxyJobs(req, res, user);
-    }
+    res.writeHead(405);
+    res.end('Method not allowed');
+  });
+}
 
-    if (pathname.startsWith('/api/jobs/') && req.method === 'GET') {
-      const parts = pathname.split('/').filter(Boolean);
-      const jobId = parts[2];
-      const fileTypeKey = parts[4];
-      if (parts.length === 3) {
-        return proxyJobs(req, res, user, jobId);
-      }
-      const mapping = { clip: 'clip', captions: 'captions', timeline: 'timeline' };
-      if (!mapping[fileTypeKey]) {
-        return sendJson(res, 400, { error: 'Unknown file type' });
-      }
-      return proxyJobs(req, res, user, jobId, mapping[fileTypeKey]);
-    }
-
-    return sendJson(res, 404, { error: 'Not found' });
-  }
-
-  serveStatic(req, res, pathname);
-});
-
-server.listen(config.port, () => {
-  console.log(`Dashboard listening on http://localhost:${config.port}`);
-});
+if (process.argv[1] === new URL(import.meta.url).pathname) {
+  const server = createDashboardServer();
+  server.listen(config.port, () => {
+    console.log(`Dashboard listening on http://localhost:${config.port}`);
+  });
+}

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -5,6 +6,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function resolveStorage(relativePath) {
   return path.resolve(path.join(__dirname, '../../', relativePath));
+}
+
+function ensureSecret(envKey, bytes) {
+  const current = (process.env[envKey] || '').trim();
+  if (current.length >= 12) {
+    return current;
+  }
+  const generated = crypto.randomBytes(bytes).toString('hex');
+  if (!process.env[envKey]) {
+    process.env[envKey] = generated;
+  }
+  console.warn(`${envKey} was not set. Generated a temporary value. Override this in production.`);
+  return generated;
 }
 
 export function loadDashboardConfig() {
@@ -15,6 +29,8 @@ export function loadDashboardConfig() {
     stateFile:
       process.env.DASHBOARD_STATE_FILE || resolveStorage('storage/dashboard-users.json'),
     uploadDir: process.env.UPLOAD_ROOT || resolveStorage('storage/uploads'),
-    sessionSecret: process.env.SESSION_SECRET || 'change-me',
+    sessionSecret: ensureSecret('SESSION_SECRET', 32),
+    sessionStoreFile:
+      process.env.SESSION_STORE_FILE || resolveStorage('storage/dashboard-sessions.json'),
   };
 }

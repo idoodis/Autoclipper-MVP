@@ -1,52 +1,30 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
+import path from 'node:path';
 
-function ensureDir(filePath) {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+import { initStore, withStore, loadStore } from '../storage/jsonStore.mjs';
+
+const DEFAULT_STATE = { tenants: [], jobs: [] };
+
+function normalizePath(filePath) {
+  return path.resolve(filePath);
 }
 
-function defaultState() {
-  return { tenants: [], jobs: [] };
+export async function initState(filePath) {
+  const resolved = normalizePath(filePath);
+  await initStore(resolved, DEFAULT_STATE);
 }
 
-function loadState(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return defaultState();
-    }
-    throw error;
-  }
+async function mutateState(filePath, mutator) {
+  const resolved = normalizePath(filePath);
+  return withStore(resolved, DEFAULT_STATE, mutator);
 }
 
-function saveState(filePath, state) {
-  ensureDir(filePath);
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
-  fs.renameSync(tmpPath, filePath);
+async function readState(filePath) {
+  const resolved = normalizePath(filePath);
+  return loadStore(resolved, DEFAULT_STATE);
 }
 
-function withState(filePath, updater) {
-  const state = loadState(filePath);
-  const result = updater(state);
-  saveState(filePath, state);
-  return result;
-}
-
-export function initState(filePath) {
-  ensureDir(filePath);
-  if (!fs.existsSync(filePath)) {
-    saveState(filePath, defaultState());
-  }
-}
-
-export function createTenant(filePath, name) {
+export async function createTenant(filePath, name) {
   const createdAt = new Date().toISOString();
   const tenant = {
     id: crypto.randomUUID(),
@@ -54,23 +32,23 @@ export function createTenant(filePath, name) {
     apiKey: crypto.randomUUID().replace(/-/g, ''),
     createdAt,
   };
-  return withState(filePath, (state) => {
+  await mutateState(filePath, (state) => {
     state.tenants.push(tenant);
-    return tenant;
   });
+  return tenant;
 }
 
-export function listTenants(filePath) {
-  const state = loadState(filePath);
+export async function listTenants(filePath) {
+  const state = await readState(filePath);
   return state.tenants.slice().sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
-export function findTenantByApiKey(filePath, apiKey) {
-  const state = loadState(filePath);
+export async function findTenantByApiKey(filePath, apiKey) {
+  const state = await readState(filePath);
   return state.tenants.find((tenant) => tenant.apiKey === apiKey) || null;
 }
 
-export function createJob(filePath, jobInput) {
+export async function createJob(filePath, jobInput) {
   const createdAt = new Date().toISOString();
   const job = {
     id: crypto.randomUUID(),
@@ -81,48 +59,77 @@ export function createJob(filePath, jobInput) {
     status: 'queued',
     createdAt,
     updatedAt: createdAt,
+    availableAt: createdAt,
+    attempts: 0,
+    errorMessage: null,
     metadata: jobInput.metadata || {},
   };
-  return withState(filePath, (state) => {
+  await mutateState(filePath, (state) => {
     state.jobs.push(job);
-    return job;
   });
+  return job;
 }
 
-export function listJobs(filePath, tenantId, limit = 50) {
-  const state = loadState(filePath);
+export async function listJobs(filePath, tenantId, limit = 50) {
+  const state = await readState(filePath);
   return state.jobs
     .filter((job) => job.tenantId === tenantId)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     .slice(0, limit);
 }
 
-export function getJob(filePath, jobId) {
-  const state = loadState(filePath);
+export async function getJob(filePath, jobId) {
+  const state = await readState(filePath);
   return state.jobs.find((job) => job.id === jobId) || null;
 }
 
-export function updateJob(filePath, jobId, patch) {
-  return withState(filePath, (state) => {
+export async function updateJob(filePath, jobId, patch) {
+  let updated = null;
+  await mutateState(filePath, (state) => {
     const job = state.jobs.find((item) => item.id === jobId);
     if (!job) {
-      return null;
+      return;
     }
     Object.assign(job, patch, { updatedAt: new Date().toISOString() });
-    return job;
+    updated = { ...job };
   });
+  return updated;
 }
 
-export function takeNextQueuedJob(filePath) {
+function isJobReady(job) {
+  if (job.status !== 'queued') {
+    return false;
+  }
+  if (!job.availableAt) {
+    return true;
+  }
+  return new Date(job.availableAt).getTime() <= Date.now();
+}
+
+export async function takeNextQueuedJob(filePath) {
   let result = null;
-  withState(filePath, (state) => {
-    const job = state.jobs.find((item) => item.status === 'queued');
+  await mutateState(filePath, (state) => {
+    const job = state.jobs.find((item) => isJobReady(item));
     if (job) {
       job.status = 'processing';
+      job.attempts = (job.attempts || 0) + 1;
+      job.availableAt = null;
       job.updatedAt = new Date().toISOString();
       result = { ...job };
     }
-    return null;
   });
   return result;
+}
+
+export async function requeueJob(filePath, jobId, delayMs, errorMessage) {
+  const retryAt = new Date(Date.now() + Math.max(0, delayMs || 0)).toISOString();
+  return updateJob(filePath, jobId, {
+    status: 'queued',
+    availableAt: retryAt,
+    errorMessage: errorMessage || null,
+  });
+}
+
+export async function finalizeJob(filePath, jobId, statusPatch) {
+  return updateJob(filePath, jobId, statusPatch);
 }
