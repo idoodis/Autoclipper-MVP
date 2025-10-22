@@ -9,6 +9,7 @@ AutoClipper converts long-form videos into branded, captioned vertical clips. Th
 - **Background worker** – Polling worker downloads remote media, runs the clip pipeline, and records completion or failure metadata.
 - **Configurable clips** – Override watermark text and duration limits per job while reusing the robust FFmpeg + Python toolchain.
 - **Automated tests** – Vitest suite covers the REST API contract and the original clip smoke test.
+- **Creator dashboard** – A session-based web app for onboarding users, uploading videos, and monitoring clip jobs without exposing raw API keys.
 - **Deployment ready basics** – `.env` configuration, Makefile targets, and storage directory structure make it simple to run on a VM or container.
 
 ## Setup
@@ -33,6 +34,16 @@ In another terminal run the worker loop:
 ```bash
 make worker
 ```
+
+### Launch the creator dashboard
+
+The dashboard wraps the API with user authentication, handles uploads, and surfaces job results.
+
+```bash
+make dashboard
+```
+
+By default it listens on [http://localhost:4000](http://localhost:4000) and proxies requests to the API running on port 3000.
 
 ### Create a tenant
 
@@ -62,6 +73,15 @@ curl -H "x-api-key: $API_KEY" http://localhost:3000/v1/jobs
 
 Outputs land in `storage/jobs/<jobId>/` (clip, captions, timeline JSON).
 
+### Use the web app
+
+1. Visit `http://localhost:4000`.
+2. Register a creator account. The dashboard provisions a tenant behind the scenes using the `ADMIN_TOKEN` from `.env`.
+3. Upload a video file **or** paste an external URL, customize watermark text/duration, and queue a job.
+4. Track progress from the jobs table and download the generated clip, captions, or timeline when complete.
+
+Uploaded assets are stored under `storage/uploads/` and job outputs continue to live under `storage/jobs/<jobId>/`.
+
 ## Testing
 
 ```bash
@@ -87,6 +107,11 @@ Environment variables (see `.env.example`):
 - `STATE_FILE` – Path to the JSON state file.
 - `STORAGE_ROOT` – Root directory where job outputs live.
 - `WORKER_POLL_MS` – Worker polling interval in milliseconds.
+- `DASHBOARD_PORT` – Port for the creator dashboard (default `4000`).
+- `API_BASE_URL` – Base URL the dashboard uses to reach the API (default `http://localhost:3000`).
+- `DASHBOARD_STATE_FILE` – Path for storing dashboard user accounts (default `storage/dashboard-users.json`).
+- `UPLOAD_ROOT` – Directory for uploaded source videos (default `storage/uploads`).
+- `SESSION_SECRET` – Secret used to sign dashboard session cookies.
 
 ## Architecture Overview
 

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auto-Clipper Dashboard</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="auth-card" id="auth-card">
+        <div class="brand">
+          <div class="logo">⚡</div>
+          <h1>Auto-Clipper Studio</h1>
+          <p>Create scroll-stopping clips from long-form videos.</p>
+        </div>
+        <div class="auth-toggle">
+          <button id="show-login" class="active">Log in</button>
+          <button id="show-register">Sign up</button>
+        </div>
+        <form id="login-form" class="auth-form active">
+          <label>Email<input type="email" name="email" required /></label>
+          <label>Password<input type="password" name="password" required minlength="8" /></label>
+          <button type="submit">Log in</button>
+          <p class="form-error" data-for="login"></p>
+        </form>
+        <form id="register-form" class="auth-form">
+          <label>Name<input type="text" name="name" required minlength="2" /></label>
+          <label>Email<input type="email" name="email" required /></label>
+          <label>Password<input type="password" name="password" required minlength="8" /></label>
+          <button type="submit">Create account</button>
+          <p class="form-error" data-for="register"></p>
+        </form>
+      </div>
+
+      <div class="dashboard" id="dashboard">
+        <header>
+          <div>
+            <h1>Creator Workspace</h1>
+            <p id="welcome-text"></p>
+          </div>
+          <button id="logout-button" class="ghost">Log out</button>
+        </header>
+
+        <section class="card" id="job-form-card">
+          <h2>Generate a new clip</h2>
+          <form id="job-form">
+            <div class="field-group">
+              <label class="file-upload">
+                <span>Upload video</span>
+                <input type="file" name="sourceFile" accept="video/*" />
+              </label>
+              <div class="divider"><span>or</span></div>
+              <label>
+                <span>Paste video URL</span>
+                <input type="url" name="sourceUrl" placeholder="https://example.com/video.mp4" />
+              </label>
+            </div>
+            <div class="field-row">
+              <label>
+                <span>Watermark text</span>
+                <input type="text" name="watermarkText" placeholder="Your brand" />
+              </label>
+              <label>
+                <span>Max duration (seconds)</span>
+                <input type="number" name="maxDurationSeconds" min="5" max="120" placeholder="59" />
+              </label>
+            </div>
+            <button type="submit">Queue clip</button>
+            <p class="form-error" data-for="job"></p>
+          </form>
+        </section>
+
+        <section class="card" id="jobs-card">
+          <div class="card-header">
+            <h2>Your jobs</h2>
+            <button id="refresh-jobs" class="ghost">Refresh</button>
+          </div>
+          <div class="jobs-empty" id="jobs-empty">
+            <h3>No jobs yet</h3>
+            <p>Queue your first clip to see progress and download results here.</p>
+          </div>
+          <table id="jobs-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Submitted</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+      </div>
+    </div>
+    <template id="job-row-template">
+      <tr>
+        <td class="mono id"></td>
+        <td class="submitted"></td>
+        <td><span class="status"></span></td>
+        <td class="actions"></td>
+      </tr>
+    </template>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
