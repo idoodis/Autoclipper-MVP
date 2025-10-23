@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
 
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    SentimentIntensityAnalyzer = None
+
 EXCITED_WORDS = {
     "amazing",
     "awesome",
@@ -20,6 +25,33 @@ EXCITED_WORDS = {
     "unbelievable",
     "wild",
     "wow",
+}
+
+HOOK_PHRASES = {
+    "how to",
+    "here's",
+    "listen",
+    "the secret",
+    "this is why",
+    "did you know",
+    "let me tell",
+    "you won't believe",
+    "step by step",
+}
+
+EMPHASIS_WORDS = {
+    "must",
+    "need",
+    "critical",
+    "perfect",
+    "professional",
+    "viral",
+    "breakthrough",
+    "pro tip",
+    "story",
+    "insight",
+    "strategy",
+    "hook",
 }
 
 STOP_WORDS = {
@@ -146,11 +178,14 @@ def refine_segment(segment: Segment, captions: List[Caption]) -> Segment:
     return Segment(start=start, end=end, energy=segment.energy)
 
 
-def score_segments(segments: List[Segment], captions: List[Caption], max_duration: float) -> List[Segment]:
+def score_segments(
+    segments: List[Segment], captions: List[Caption], max_duration: float
+) -> tuple[List[Segment], List[Segment]]:
     if not segments:
-        return []
+        return [], []
 
     energy_values = [segment.energy for segment in segments]
+    analyzer = SentimentIntensityAnalyzer() if SentimentIntensityAnalyzer else None
     scored: List[Segment] = []
     for segment in segments:
         window = captions_for_segment(segment, captions)
@@ -163,19 +198,27 @@ def score_segments(segments: List[Segment], captions: List[Caption], max_duratio
         words_per_second = len(words) / max(refined.duration, 1e-6)
         lexical_density = len(unique_words) / max(len(words), 1) if words else 0.0
         excitement_hits = sum(1 for word in words if word in EXCITED_WORDS)
+        emphasis_hits = sum(1 for phrase in EMPHASIS_WORDS if phrase in text.lower())
+        hook_hits = sum(1 for phrase in HOOK_PHRASES if phrase in text.lower())
+        is_question = text.strip().endswith('?')
+        sentiment = analyzer.polarity_scores(text)['compound'] if analyzer and text else 0.0
         punctuation = text.count('!') * 0.15 + text.count('?') * 0.1
         energy_component = normalize(segment.energy, energy_values)
         pacing_component = min(words_per_second / 3.0, 1.2)
         lexical_component = min(lexical_density + 0.2, 1.2)
-        excitement_multiplier = 1.0 + min(excitement_hits * 0.2 + punctuation, 1.5)
+        excitement_multiplier = 1.0 + min(excitement_hits * 0.18 + emphasis_hits * 0.12 + punctuation, 1.6)
+        sentiment_multiplier = 1.0 + min(abs(sentiment) * 0.6, 0.6)
+        hook_boost = min(hook_hits * 0.25 + (0.2 if is_question else 0.0), 0.8)
+        storytelling_component = min(coverage * 0.6 + hook_boost + lexical_component * 0.3, 1.5)
         coverage_component = min(coverage + 0.1, 1.3)
         base_score = (
             energy_component * 0.45
             + coverage_component * 0.2
-            + lexical_component * 0.2
-            + pacing_component * 0.15
+            + lexical_component * 0.15
+            + pacing_component * 0.12
+            + storytelling_component * 0.08
         )
-        final_score = base_score * excitement_multiplier
+        final_score = base_score * excitement_multiplier * sentiment_multiplier + hook_boost * 0.5
         scored.append(
             Segment(
                 start=refined.start,
@@ -188,6 +231,9 @@ def score_segments(segments: List[Segment], captions: List[Caption], max_duratio
                     "lexical_density": round(lexical_component, 3),
                     "pacing": round(pacing_component, 3),
                     "excitement_multiplier": round(excitement_multiplier, 3),
+                    "sentiment": round(sentiment, 3),
+                    "storytelling": round(storytelling_component, 3),
+                    "hook_boost": round(hook_boost, 3),
                     "words": len(words),
                 },
             )
@@ -219,7 +265,51 @@ def score_segments(segments: List[Segment], captions: List[Caption], max_duratio
             break
 
     selected.sort(key=lambda seg: seg.start)
-    return selected
+    return selected, ranked
+
+
+def build_variants(ranked: List[Segment], max_duration: float, limit: int) -> List[List[Segment]]:
+    variants: List[List[Segment]] = []
+    if limit <= 0:
+        return variants
+
+    used_keys: set[tuple[float, float]] = set()
+    for anchor_idx, anchor in enumerate(ranked):
+        if anchor.duration < 0.4:
+            continue
+        timeline: List[Segment] = []
+        total = 0.0
+        for candidate in ranked[anchor_idx:]:
+            if candidate.duration < 0.35:
+                continue
+            if (round(candidate.start, 2), round(candidate.end, 2)) in used_keys and candidate is not anchor:
+                continue
+            remaining = max_duration - total
+            if remaining <= 0:
+                break
+            if candidate.duration <= remaining + 0.05:
+                clipped = candidate
+                total += candidate.duration
+            else:
+                clipped = Segment(
+                    start=candidate.start,
+                    end=candidate.start + remaining,
+                    energy=candidate.energy,
+                    score=candidate.score,
+                    reasons=candidate.reasons,
+                )
+                total = max_duration
+            timeline.append(clipped)
+            used_keys.add((round(clipped.start, 2), round(clipped.end, 2)))
+            if total >= max_duration - 0.05:
+                break
+
+        if timeline:
+            variants.append(sorted(timeline, key=lambda seg: seg.start))
+        if len(variants) >= limit:
+            break
+
+    return variants
 
 
 def main() -> None:
@@ -228,6 +318,7 @@ def main() -> None:
     parser.add_argument('--captions', required=True)
     parser.add_argument('--out', default=None)
     parser.add_argument('--max-duration', type=float, default=59.0)
+    parser.add_argument('--max-variants', type=int, default=3)
     args = parser.parse_args()
 
     timeline_path = Path(args.timeline)
@@ -248,7 +339,7 @@ def main() -> None:
     ]
 
     captions = load_captions(Path(args.captions))
-    selected = score_segments(segments, captions, max_duration=float(args.max_duration))
+    selected, ranked = score_segments(segments, captions, max_duration=float(args.max_duration))
 
     if not selected and segments:
         selected = segments[:1]
@@ -266,6 +357,19 @@ def main() -> None:
     for seg in selected:
         combined_candidates[(round(seg.start, 3), round(seg.end, 3))] = seg
 
+    variant_sequences = build_variants(ranked, max_duration=float(args.max_duration), limit=max(1, int(args.max_variants)))
+
+    serialized_variants = []
+    for index, seq in enumerate(variant_sequences, start=1):
+        serialized_variants.append(
+            {
+                'id': f'variant-{index}',
+                'score': round(sum(seg.score for seg in seq) / max(len(seq), 1), 3),
+                'duration': round(sum(seg.duration for seg in seq), 3),
+                'keep': [serialize(seg) for seg in seq],
+            }
+        )
+
     output = {
         **data,
         'keep': [serialize(seg) for seg in selected],
@@ -275,8 +379,10 @@ def main() -> None:
             'highlight_ranking': {
                 'max_duration': float(args.max_duration),
                 'caption_count': len(captions),
+                'variants': len(serialized_variants),
             },
         },
+        'variants': serialized_variants,
     }
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

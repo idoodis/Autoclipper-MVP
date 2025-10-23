@@ -36,11 +36,21 @@ describe('clip smoke test', () => {
 
     const timeline = JSON.parse(fs.readFileSync(timelinePath, 'utf8')) as {
       keep: Array<{ start: number; end: number }>;
+      variants?: Array<{ id: string; export: string; keep: Array<{ start: number; end: number }> }>;
+      parameters?: { variants?: Array<{ file: string }> };
     };
 
     expect(timeline.keep.length).toBeGreaterThan(0);
     const totalKeep = timeline.keep.reduce((sum, region) => sum + (region.end - region.start), 0);
     expect(totalKeep).toBeLessThanOrEqual(59);
+
+    expect(Array.isArray(timeline.variants)).toBe(true);
+    expect(timeline.variants?.length).toBeGreaterThanOrEqual(1);
+    const secondary = timeline.variants?.find((variant) => variant.export && variant.export !== 'clip.mp4');
+    if (secondary) {
+      const secondaryPath = path.join(OUT_DIR, secondary.export);
+      expect(fs.existsSync(secondaryPath)).toBe(true);
+    }
 
     const probe = await execa(ffmpegPath, ['-hide_banner', '-i', clipPath], {
       cwd: ROOT,

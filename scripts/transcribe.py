@@ -1,6 +1,7 @@
 import argparse
 import audioop
 import statistics
+import textwrap
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 DEFAULT_MODEL_NAME = "base"
+DEFAULT_MAX_LINE_WIDTH = 42
 
 
 @dataclass
@@ -21,6 +23,7 @@ class CaptionSegment:
     start: float
     end: float
     text: str
+    speaker: Optional[str] = None
 
 
 def format_timestamp(value: float) -> str:
@@ -31,17 +34,30 @@ def format_timestamp(value: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
 
-def write_srt(path: Path, segments: Iterable[CaptionSegment]) -> None:
+def format_caption_text(text: str, max_line_width: int) -> str:
+    cleaned = " ".join(text.strip().split())
+    if not cleaned:
+        return ""
+    if cleaned[-1] not in {".", "!", "?", "…"}:
+        cleaned += "."
+    cleaned = cleaned[0].upper() + cleaned[1:] if len(cleaned) > 1 else cleaned.upper()
+    wrapped = textwrap.fill(cleaned, width=max_line_width)
+    return wrapped
+
+
+def write_srt(path: Path, segments: Iterable[CaptionSegment], max_line_width: int) -> None:
     lines = []
     for seg in segments:
-        text = seg.text.strip()
+        text = format_caption_text(seg.text, max_line_width)
         if not text:
             continue
         start_ts = format_timestamp(seg.start)
         end_ts = format_timestamp(seg.end)
         lines.append(f"{seg.index}")
         lines.append(f"{start_ts} --> {end_ts}")
-        lines.append(text)
+        if seg.speaker:
+            lines.append(f"{seg.speaker}:")
+        lines.extend(text.splitlines())
         lines.append("")
 
     data = "\n".join(lines).strip() + "\n"
@@ -62,18 +78,21 @@ def read_pcm_frames(path: Path, frame_ms: int = 30) -> tuple[List[bytes], int]:
     return frames, rate
 
 
-def describe_energy(level: float, variance: float) -> str:
+def describe_energy(level: float, variance: float, start_time: float) -> str:
+    minute = int(start_time // 60)
+    second = int(start_time % 60)
+    timestamp = f"{minute:02d}:{second:02d}"
     if level > 0.85:
-        return "Explosive moment"
+        return f"Peak excitement at {timestamp}"
     if level > 0.65:
-        return "High-energy highlight"
+        return f"Big reaction hits at {timestamp}"
     if level > 0.45:
-        return "Energetic beat"
+        return f"Story beat around {timestamp}"
     if level > 0.3:
-        return "Spoken passage"
+        return f"Conversation continues at {timestamp}"
     if variance > 0.08:
-        return "Dynamic ambience"
-    return "Quiet ambience"
+        return f"Ambient energy rising near {timestamp}"
+    return f"Quiet backdrop near {timestamp}"
 
 
 def fallback_transcribe(audio_path: Path) -> list[CaptionSegment]:
@@ -107,7 +126,7 @@ def fallback_transcribe(audio_path: Path) -> list[CaptionSegment]:
                     local_mean = statistics.fmean(accumulator) if accumulator else mean_energy
                     level = min(1.0, local_mean / max_energy)
                     variance = stdev_energy / max(mean_energy, 1e-6)
-                    text = describe_energy(level, variance)
+                    text = describe_energy(level, variance, start_time)
                     segments.append(
                         CaptionSegment(
                             index=len(segments) + 1,
@@ -126,7 +145,7 @@ def fallback_transcribe(audio_path: Path) -> list[CaptionSegment]:
             local_mean = statistics.fmean(accumulator) if accumulator else mean_energy
             level = min(1.0, local_mean / max_energy)
             variance = stdev_energy / max(mean_energy, 1e-6)
-            text = describe_energy(level, variance)
+            text = describe_energy(level, variance, start_time)
             segments.append(
                 CaptionSegment(
                     index=len(segments) + 1,
@@ -137,12 +156,39 @@ def fallback_transcribe(audio_path: Path) -> list[CaptionSegment]:
             )
 
     if not segments:
-        text = describe_energy(min(1.0, mean_energy / max_energy), stdev_energy / max(mean_energy, 1e-6))
+        text = describe_energy(
+            min(1.0, mean_energy / max_energy),
+            stdev_energy / max(mean_energy, 1e-6),
+            0.0,
+        )
         segments.append(
             CaptionSegment(index=1, start=0.0, end=len(frames) * frame_duration, text=text)
         )
 
     return segments
+
+
+def merge_segments(segments: list[CaptionSegment], max_gap: float) -> list[CaptionSegment]:
+    if not segments:
+        return []
+    merged: list[CaptionSegment] = []
+    current = segments[0]
+    for segment in segments[1:]:
+        if segment.start - current.end <= max_gap and current.speaker == segment.speaker:
+            current = CaptionSegment(
+                index=current.index,
+                start=current.start,
+                end=segment.end,
+                text=f"{current.text.strip()} {segment.text.strip()}".strip(),
+                speaker=current.speaker,
+            )
+        else:
+            merged.append(current)
+            current = segment
+    merged.append(current)
+    for idx, segment in enumerate(merged):
+        merged[idx] = CaptionSegment(index=idx + 1, start=segment.start, end=segment.end, text=segment.text, speaker=segment.speaker)
+    return merged
 
 
 def main() -> None:
@@ -151,6 +197,9 @@ def main() -> None:
     parser.add_argument("--srt", required=True)
     parser.add_argument("--model", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--max-line-width", type=int, default=DEFAULT_MAX_LINE_WIDTH)
+    parser.add_argument("--translate", action="store_true")
+    parser.add_argument("--speaker-change-delta", type=float, default=1.2)
     args = parser.parse_args()
 
     captions: list[CaptionSegment]
@@ -170,16 +219,37 @@ def main() -> None:
             args.audio,
             vad_filter=True,
             without_timestamps=False,
+            word_timestamps=True,
+            beam_size=5,
+            temperature=[0.0, 0.2, 0.4],
+            condition_on_previous_text=True,
+            compression_ratio_threshold=2.4,
+            no_speech_threshold=0.32,
+            translate=bool(args.translate),
         )
 
-        captions = [
-            CaptionSegment(index=i + 1, start=segment.start, end=segment.end, text=segment.text or "")
-            for i, segment in enumerate(segments)
-        ]
+        captions = []
+        for i, segment in enumerate(segments):
+            text = (segment.text or "").strip()
+            speaker = None
+            if getattr(segment, "avg_logprob", 0.0) < -0.6 and segment.no_speech_prob < 0.4:
+                speaker = "Speaker B"
+            elif segment.no_speech_prob < 0.4:
+                speaker = "Speaker A"
+            captions.append(
+                CaptionSegment(
+                    index=i + 1,
+                    start=segment.start,
+                    end=segment.end,
+                    text=text,
+                    speaker=speaker,
+                )
+            )
+        captions = merge_segments(captions, max_gap=max(0.3, float(args.speaker_change_delta)))
 
     srt_path = Path(args.srt)
     srt_path.parent.mkdir(parents=True, exist_ok=True)
-    write_srt(srt_path, captions)
+    write_srt(srt_path, captions, max_line_width=max(24, int(args.max_line_width)))
     print("Wrote", srt_path)
 
 

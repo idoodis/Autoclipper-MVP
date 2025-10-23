@@ -10,6 +10,15 @@ import { buildConcatFilter } from './lib/filterGraph.mjs';
 import { clampKeepRegions, loadTimeline, saveTimeline, totalDuration } from './lib/timeline.mjs';
 
 const DEFAULT_MAX_DURATION_SECONDS = 59;
+const DEFAULT_VARIANT_COUNT = 3;
+
+function slugify(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
 
 async function run(cmd, args, cwd) {
   console.log(`$ ${cmd} ${args.join(' ')}`);
@@ -20,6 +29,50 @@ function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
   }
+}
+
+async function renderVariant({ vodPath, keep, captionsPath, watermarkText, outPath }) {
+  const duration = totalDuration(keep);
+  if (duration <= 0) {
+    throw new Error('Cannot render a clip with zero duration');
+  }
+
+  const filterGraph = buildConcatFilter(keep, {
+    captionsPath,
+    watermarkText,
+    totalDurationSeconds: duration,
+  });
+
+  await run(ffmpegPath, [
+    '-y',
+    '-i',
+    vodPath,
+    '-filter_complex',
+    filterGraph,
+    '-map',
+    '[outv]',
+    '-map',
+    '[outa]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'veryfast',
+    '-profile:v',
+    'high',
+    '-level',
+    '4.1',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '160k',
+    '-movflags',
+    '+faststart',
+    '-t',
+    duration.toFixed(3),
+    outPath,
+  ]);
+
+  return { path: outPath, duration };
 }
 
 export async function createClip(options) {
@@ -34,6 +87,7 @@ export async function createClip(options) {
     highlightScript = path.join(projectRoot, 'scripts', 'highlight_rank.py'),
     captionsModel,
     transcriptionDevice,
+    variantCount = DEFAULT_VARIANT_COUNT,
   } = options;
 
   ensureDir(outDir);
@@ -64,6 +118,8 @@ export async function createClip(options) {
       captionsPath,
       '--max-duration',
       String(maxDurationSeconds),
+      '--max-variants',
+      String(Math.max(1, variantCount)),
     ],
     projectRoot,
   );
@@ -75,59 +131,92 @@ export async function createClip(options) {
     throw new Error('Timeline did not produce any valid keep regions');
   }
 
-  const filterGraph = buildConcatFilter(clippedKeep, captionsPath, watermarkText);
+  const variantPlans = [
+    {
+      id: 'primary',
+      label: 'Primary highlight',
+      score: undefined,
+      keep: clippedKeep,
+    },
+    ...(Array.isArray(timeline.variants) ? timeline.variants : []),
+  ]
+    .slice(0, Math.max(1, variantCount))
+    .map((variant, index) => {
+      const keep = clampKeepRegions(variant.keep, maxDurationSeconds);
+      const duration = totalDuration(keep);
+      return {
+        id: variant.id || (index === 0 ? 'primary' : `variant-${index}`),
+        label: variant.label,
+        score: variant.score,
+        keep,
+        duration,
+      };
+    })
+    .filter((variant) => variant.keep.length > 0 && variant.duration > 0.2);
+
+  if (variantPlans.length === 0) {
+    throw new Error('No valid variants produced from highlight ranking');
+  }
+
+  const renderedVariants = [];
+
+  for (let index = 0; index < variantPlans.length; index += 1) {
+    const variant = variantPlans[index];
+    const slug = slugify(index === 0 ? 'clip' : variant.id || `variant-${index}`) || `variant-${index}`;
+    const fileName = index === 0 ? 'clip.mp4' : `clip_${slug}.mp4`;
+    const outPath = path.join(outDir, fileName);
+    console.log(`Rendering ${variant.label || variant.id || `variant ${index + 1}`} → ${fileName}`);
+    const rendered = await renderVariant({
+      vodPath,
+      keep: variant.keep,
+      captionsPath,
+      watermarkText,
+      outPath,
+    });
+    renderedVariants.push({
+      ...variant,
+      ...rendered,
+      fileName,
+    });
+  }
 
   const finalTimeline = {
     ...timeline,
-    keep: clippedKeep,
+    keep: renderedVariants[0].keep,
+    variants: renderedVariants.map(({ keep, id, label, score, duration, fileName }) => ({
+      id,
+      label,
+      score,
+      duration,
+      keep,
+      export: fileName,
+    })),
     parameters: {
       ...timeline.parameters,
       maxDurationSeconds,
       watermarkText,
+      variants: renderedVariants.map(({ id, fileName, duration }) => ({
+        id,
+        file: fileName,
+        duration,
+      })),
     },
   };
+
   saveTimeline(timelinePath, finalTimeline);
 
-  const clipOut = path.join(outDir, 'clip.mp4');
-  const totalKeepDuration = totalDuration(clippedKeep);
-  await run(ffmpegPath, [
-    '-y',
-    '-i',
-    vodPath,
-    '-filter_complex',
-    filterGraph,
-    '-map',
-    '[outv]',
-    '-map',
-    '[outa]',
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-profile:v',
-    'high',
-    '-level',
-    '4.1',
-    '-c:a',
-    'aac',
-    '-b:a',
-    '160k',
-    '-movflags',
-    '+faststart',
-    '-t',
-    totalKeepDuration.toFixed(3),
-    clipOut,
-  ]);
-
-  console.log('Clip duration', totalKeepDuration.toFixed(3), 'seconds');
-  console.log('Done →', clipOut);
+  const primary = renderedVariants[0];
+  console.log('Primary clip duration', primary.duration.toFixed(3), 'seconds');
+  console.log('Done →', renderedVariants.map((variant) => variant.path).join(', '));
 
   return {
-    clipPath: clipOut,
+    clipPath: primary.path,
+    clipPaths: renderedVariants.map((variant) => variant.path),
     captionsPath,
     timelinePath,
     timeline: finalTimeline,
-    durationSeconds: totalKeepDuration,
+    durationSeconds: primary.duration,
+    variants: renderedVariants,
   };
 }
 
@@ -139,6 +228,7 @@ async function main() {
     .option('watermark-text', { type: 'string' })
     .option('model', { type: 'string' })
     .option('device', { type: 'string' })
+    .option('variants', { type: 'number', default: DEFAULT_VARIANT_COUNT })
     .strict()
     .parseAsync();
 
@@ -152,6 +242,7 @@ async function main() {
     watermarkText: typeof argv.watermarkText === 'string' ? argv.watermarkText : undefined,
     captionsModel: typeof argv.model === 'string' ? argv.model : undefined,
     transcriptionDevice: typeof argv.device === 'string' ? argv.device : undefined,
+    variantCount: typeof argv.variants === 'number' ? argv.variants : undefined,
   });
 }
 

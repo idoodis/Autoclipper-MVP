@@ -146,6 +146,7 @@ async function processJob(job, workerId) {
     maxDurationSeconds: job.maxDurationSeconds,
     watermarkText: job.watermarkText,
     projectRoot: process.cwd(),
+    variantCount: job.variantCount,
   });
   await finalizeJob(config.stateFile, job.id, {
     status: 'completed',
@@ -153,6 +154,7 @@ async function processJob(job, workerId) {
     errorMessage: null,
     output: {
       clip: result.clipPath,
+      clips: result.clipPaths,
       captions: result.captionsPath,
       timeline: result.timelinePath,
       durationSeconds: result.durationSeconds,
@@ -160,6 +162,7 @@ async function processJob(job, workerId) {
     metadata: {
       ...(job.metadata || {}),
       timeline: result.timeline,
+      variants: result.variants,
     },
   });
   console.log(`[worker-${workerId}] Job ${job.id} completed in ${result.durationSeconds.toFixed(2)}s of footage`);

@@ -1,2 +1,4 @@
 # Core pipeline relies on standard library and FFmpeg.
 # Optional: install faster-whisper==1.0.0 for high-quality captions.
+# Highlight scoring benefits from lightweight sentiment analysis.
+vaderSentiment==3.3.2
