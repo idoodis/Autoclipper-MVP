@@ -30,11 +30,35 @@ export function normalizeRegions(regions) {
     .sort((a, b) => a.start - b.start);
 }
 
+function normalizeVariant(variant, index) {
+  if (!variant) {
+    return undefined;
+  }
+
+  const keep = normalizeRegions(variant.keep || variant.segments || variant);
+  if (!keep.length) {
+    return undefined;
+  }
+
+  return {
+    id: typeof variant.id === 'string' ? variant.id : `variant-${index + 1}`,
+    label: typeof variant.label === 'string' ? variant.label : undefined,
+    score: isFiniteNumber(variant.score) ? variant.score : undefined,
+    duration: isFiniteNumber(variant.duration) ? variant.duration : undefined,
+    keep,
+  };
+}
+
 export function loadTimeline(timelinePath) {
   const rawData = fs.readFileSync(timelinePath, 'utf8');
   const data = JSON.parse(rawData) || {};
   const duration = isFiniteNumber(data?.duration) ? data.duration : 0;
   const keep = normalizeRegions(data?.keep);
+  const variants = Array.isArray(data?.variants)
+    ? data.variants
+        .map((variant, index) => normalizeVariant(variant, index))
+        .filter(Boolean)
+    : [];
 
   if (keep.length > 0) {
     return {
@@ -42,6 +66,7 @@ export function loadTimeline(timelinePath) {
       keep,
       candidates: data?.candidates ? normalizeRegions(data.candidates) : undefined,
       parameters: data?.parameters,
+      variants,
     };
   }
 
@@ -51,6 +76,7 @@ export function loadTimeline(timelinePath) {
     keep: [{ start: 0, end: fallbackEnd }],
     candidates: data?.candidates ? normalizeRegions(data.candidates) : undefined,
     parameters: data?.parameters,
+    variants,
   };
 }
 
@@ -88,6 +114,25 @@ export function saveTimeline(timelinePath, timeline) {
       end: Number(formatTime(region.end)),
       score: typeof region.score === 'number' ? Number(formatTime(region.score)) : undefined,
     })),
+    variants: Array.isArray(timeline.variants)
+      ? timeline.variants
+          .map((variant, index) => ({
+            id: typeof variant.id === 'string' ? variant.id : `variant-${index + 1}`,
+            label: variant.label,
+            score: isFiniteNumber(variant.score) ? Number(formatTime(variant.score)) : undefined,
+            duration: isFiniteNumber(variant.duration)
+              ? Number(formatTime(variant.duration))
+              : undefined,
+            keep: normalizeRegions(variant.keep).map((region) => ({
+              ...region,
+              start: Number(formatTime(region.start)),
+              end: Number(formatTime(region.end)),
+              score:
+                typeof region.score === 'number' ? Number(formatTime(region.score)) : undefined,
+            })),
+          }))
+          .filter((variant) => variant.keep.length > 0)
+      : undefined,
   };
   fs.writeFileSync(timelinePath, JSON.stringify(formatted, null, 2));
 }
