@@ -4,7 +4,24 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { DatabaseSync } = require('node:sqlite');
+
+let createDatabase;
+
+try {
+  const { DatabaseSync } = require('node:sqlite');
+  createDatabase = (filePath) => new DatabaseSync(filePath);
+} catch (nodeSqliteError) {
+  try {
+    const BetterSqlite3 = require('better-sqlite3');
+    createDatabase = (filePath) => new BetterSqlite3(filePath);
+  } catch (betterSqliteError) {
+    const error = new Error(
+      'Failed to load SQLite bindings. Install Node.js 22+ or add better-sqlite3 as a dependency.',
+      { cause: new AggregateError([nodeSqliteError, betterSqliteError]) },
+    );
+    throw error;
+  }
+}
 
 const connections = new Map();
 
@@ -23,7 +40,10 @@ function openDatabase(filePath) {
   }
 
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  const db = new DatabaseSync(resolved);
+  if (!createDatabase) {
+    throw new Error('No SQLite driver available. Did initialization fail?');
+  }
+  const db = createDatabase(resolved);
   db.exec('PRAGMA journal_mode = wal;');
   db.exec('PRAGMA synchronous = NORMAL;');
   db.exec('PRAGMA foreign_keys = ON;');
