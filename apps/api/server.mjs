@@ -36,8 +36,7 @@ async function readBody(req) {
   }
 }
 
-export function createApiServer() {
-  const config = loadConfig();
+export function createApiServer(config = loadConfig()) {
   const stateReady = initState(config.stateFile);
   const server = http.createServer(async (req, res) => {
     await stateReady;
@@ -137,7 +136,8 @@ export function createApiServer() {
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
-  const server = createApiServer();
+  const config = loadConfig();
+  const server = createApiServer(config);
   server.listen(config.port, () => {
     console.log(`API server listening on http://localhost:${config.port}`);
   });
