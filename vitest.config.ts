@@ -8,5 +8,10 @@ export default defineConfig({
     sequence: {
       concurrent: false,
     },
+    server: {
+      deps: {
+        external: ['node:sqlite'],
+      },
+    },
   },
 });

@@ -5,7 +5,7 @@ AutoClipper converts long-form videos into branded, captioned vertical clips. Th
 ## Highlights
 
 - **Multi-tenant API** – Provision tenants with an admin token and submit clip jobs via per-tenant API keys.
-- **Persistent state** – JSON-backed state file keeps track of tenants and job history with file locking and crash-safe backups. Output assets are written per job under `storage/jobs/`.
+- **Persistent state** – SQLite-backed state database tracks tenants, job history, and delivery manifests with crash-safe WAL journaling. Output assets are written per job under `storage/jobs/`.
 - **Background worker** – Concurrent worker pool downloads remote media with validation, retries failed jobs with exponential backoff, and records completion or failure metadata.
 - **Configurable clips** – Override watermark text and duration limits per job while reusing the robust FFmpeg + Python toolchain.
 - **Automated tests** – Vitest suite covers the REST API contract and the original clip smoke test.
@@ -106,7 +106,8 @@ Environment variables (see `.env.example`):
 
 - `PORT` – HTTP port (default `3000`).
 - `ADMIN_TOKEN` – Shared secret used to create tenants.
-- `STATE_FILE` – Path to the JSON state file.
+- `STATE_FILE` – Path to the SQLite state database (default `storage/state.db`).
+- `DISTRIBUTION_TARGETS` – JSON array or path describing where completed clips should be copied or uploaded (filesystem or presigned targets).
 - `STORAGE_ROOT` – Root directory where job outputs live.
 - `WORKER_POLL_MS` – Worker polling interval in milliseconds.
 - `WORKER_CONCURRENCY` – Number of concurrent worker loops to spawn.
@@ -126,7 +127,8 @@ Environment variables (see `.env.example`):
 
 - `apps/api/server.mjs` – Minimal Node HTTP server implementing the REST API.
 - `apps/worker/queueWorker.mjs` – Concurrent worker that executes clip jobs with retries and download safeguards.
-- `packages/state/index.mjs` – Tiny persistence layer built on atomic JSON file writes with locking and backoff metadata.
+- `packages/state/index.mjs` – SQLite persistence layer managing tenants, job queueing, and delivery manifests.
+- `packages/distribution/index.mjs` – Distribution engine that mirrors finished assets to local folders or presigned upload targets.
 - `packages/storage/jsonStore.mjs` – Shared JSON store helper that provides locking, backups, and crash-safe writes.
 - `packages/session/index.mjs` – Persistent session store used by the dashboard.
 - `apps/worker/src/clip.mjs` – Core clip pipeline orchestrating Python and FFmpeg helpers, including highlight ranking.

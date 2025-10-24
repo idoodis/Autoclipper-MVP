@@ -63,7 +63,9 @@ describe('highlight ranking', () => {
     const updated = JSON.parse(fs.readFileSync(timelinePath, 'utf8'));
 
     expect(updated.keep.length).toBeGreaterThan(0);
-    const topSegment = updated.keep[0];
+    const topSegment = updated.keep.reduce((prev, curr) =>
+      curr.score > prev.score ? curr : prev,
+    );
     expect(topSegment.start).toBeCloseTo(20, 0);
     expect(topSegment.score).toBeGreaterThan(0.5);
   });

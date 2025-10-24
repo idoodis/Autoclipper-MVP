@@ -14,7 +14,7 @@ describe('API server', () => {
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclipper-test-'));
     process.env.ADMIN_TOKEN = ADMIN_TOKEN;
-    process.env.STATE_FILE = path.join(tmpDir, 'state.json');
+    process.env.STATE_FILE = path.join(tmpDir, 'state.db');
     process.env.STORAGE_ROOT = path.join(tmpDir, 'jobs');
     process.env.PORT = '0';
     const module = await import('../apps/api/server.mjs');
@@ -54,6 +54,7 @@ describe('API server', () => {
     expect(jobRes.status).toBe(202);
     const jobBody = await jobRes.json();
     expect(jobBody.job.status).toBe('queued');
+    expect(jobBody.job.variantCount).toBeGreaterThan(0);
 
     const listRes = await fetch(`${baseUrl}/v1/jobs`, {
       headers: { 'x-api-key': apiKey },

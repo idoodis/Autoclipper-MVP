@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
@@ -186,12 +187,55 @@ def score_segments(
 
     energy_values = [segment.energy for segment in segments]
     analyzer = SentimentIntensityAnalyzer() if SentimentIntensityAnalyzer else None
-    scored: List[Segment] = []
+
+    windows: List[tuple[Segment, Segment, List[Caption], str, List[str], Counter[str]]] = []
+    document_frequency: Counter[str] = Counter()
     for segment in segments:
         window = captions_for_segment(segment, captions)
         refined = refine_segment(segment, window)
         text = ' '.join(caption.text for caption in window).strip()
         words = collect_words(text)
+        word_counts: Counter[str] = Counter(words)
+        if word_counts:
+            document_frequency.update(word_counts.keys())
+        windows.append((segment, refined, window, text, words, word_counts))
+
+    total_docs = max(len(windows), 1)
+    tfidf_totals: List[float] = []
+    for _, _, _, _, words, counts in windows:
+        if not counts:
+            tfidf_totals.append(0.0)
+            continue
+        total_words = max(len(words), 1)
+        score = 0.0
+        for word, count in counts.items():
+            idf = math.log((total_docs + 1) / (document_frequency[word] + 1)) + 1.0
+            score += (count / total_words) * idf
+        tfidf_totals.append(score)
+
+    word_sets = [set(words) for _, _, _, _, words, _ in windows]
+    context_overlap: List[float] = []
+    for index, current in enumerate(word_sets):
+        if not current:
+            context_overlap.append(0.0)
+            continue
+        neighbors = []
+        if index > 0:
+            neighbors.append(word_sets[index - 1])
+        if index + 1 < len(word_sets):
+            neighbors.append(word_sets[index + 1])
+        if not neighbors:
+            context_overlap.append(0.8)
+            continue
+        combined = set().union(*neighbors)
+        if not combined:
+            context_overlap.append(0.8)
+            continue
+        overlap = len(current & combined) / max(len(current | combined), 1)
+        context_overlap.append(overlap)
+
+    scored: List[Segment] = []
+    for idx, (segment, refined, window, text, words, counts) in enumerate(windows):
         unique_words = set(words)
         speech_duration = sum(caption.duration for caption in window)
         coverage = speech_duration / max(refined.duration, 1e-6)
@@ -206,19 +250,29 @@ def score_segments(
         energy_component = normalize(segment.energy, energy_values)
         pacing_component = min(words_per_second / 3.0, 1.2)
         lexical_component = min(lexical_density + 0.2, 1.2)
+        tfidf_component = min(normalize(tfidf_totals[idx], tfidf_totals) + 0.05, 1.3)
+        context_component = min(0.5 + context_overlap[idx] * 0.4, 1.1)
+        impact_component = min(excitement_hits * 0.25 + emphasis_hits * 0.2 + punctuation, 1.3)
         excitement_multiplier = 1.0 + min(excitement_hits * 0.18 + emphasis_hits * 0.12 + punctuation, 1.6)
         sentiment_multiplier = 1.0 + min(abs(sentiment) * 0.6, 0.6)
+        novelty_multiplier = 1.0 + min(tfidf_component * 0.25, 0.4)
         hook_boost = min(hook_hits * 0.25 + (0.2 if is_question else 0.0), 0.8)
         storytelling_component = min(coverage * 0.6 + hook_boost + lexical_component * 0.3, 1.5)
         coverage_component = min(coverage + 0.1, 1.3)
         base_score = (
-            energy_component * 0.45
+            energy_component * 0.35
             + coverage_component * 0.2
-            + lexical_component * 0.15
-            + pacing_component * 0.12
+            + lexical_component * 0.1
+            + pacing_component * 0.1
             + storytelling_component * 0.08
+            + tfidf_component * 0.06
+            + context_component * 0.06
+            + impact_component * 0.05
         )
-        final_score = base_score * excitement_multiplier * sentiment_multiplier + hook_boost * 0.5
+        final_score = (
+            base_score * excitement_multiplier * sentiment_multiplier * novelty_multiplier
+            + hook_boost * 0.5
+        )
         scored.append(
             Segment(
                 start=refined.start,
@@ -230,7 +284,11 @@ def score_segments(
                     "coverage": round(coverage_component, 3),
                     "lexical_density": round(lexical_component, 3),
                     "pacing": round(pacing_component, 3),
+                    "tfidf": round(tfidf_component, 3),
+                    "context": round(context_component, 3),
+                    "impact": round(impact_component, 3),
                     "excitement_multiplier": round(excitement_multiplier, 3),
+                    "novelty_multiplier": round(novelty_multiplier, 3),
                     "sentiment": round(sentiment, 3),
                     "storytelling": round(storytelling_component, 3),
                     "hook_boost": round(hook_boost, 3),

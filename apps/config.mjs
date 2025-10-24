@@ -43,9 +43,46 @@ function parseInteger(value, fallback) {
   return fallback;
 }
 
+function readJsonFileMaybe(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function parseDistributionTargets(rawValue) {
+  if (!rawValue) {
+    return [];
+  }
+  const trimmed = rawValue.trim();
+  let payload = trimmed;
+  if (trimmed && !trimmed.startsWith('[') && !trimmed.startsWith('{')) {
+    const possiblePath = path.resolve(trimmed);
+    const contents = readJsonFileMaybe(possiblePath);
+    if (contents !== null) {
+      payload = contents;
+    }
+  }
+  try {
+    const parsed = JSON.parse(payload);
+    if (!Array.isArray(parsed)) {
+      console.warn('DISTRIBUTION_TARGETS did not contain an array. Ignoring value.');
+      return [];
+    }
+    return parsed;
+  } catch (error) {
+    console.warn('Failed to parse DISTRIBUTION_TARGETS. Expected JSON array.', error);
+    return [];
+  }
+}
+
 export function loadConfig() {
   const port = parseInteger(process.env.PORT, 3000);
-  const stateFile = process.env.STATE_FILE || path.join(process.cwd(), 'storage', 'state.json');
+  const stateFile = process.env.STATE_FILE || path.join(process.cwd(), 'storage', 'state.db');
   const storageRoot = process.env.STORAGE_ROOT || path.join(process.cwd(), 'storage', 'jobs');
   const pollIntervalMs = Math.max(250, parseInteger(process.env.WORKER_POLL_MS, 2000));
   const workerConcurrency = Math.max(1, parseInteger(process.env.WORKER_CONCURRENCY, 2));
@@ -56,6 +93,8 @@ export function loadConfig() {
   const downloadTimeoutMs = Math.max(1000, parseInteger(process.env.WORKER_DOWNLOAD_TIMEOUT_MS, 120_000));
 
   const adminToken = ensureSecret('ADMIN_TOKEN', 24);
+
+  const distributionTargets = parseDistributionTargets(process.env.DISTRIBUTION_TARGETS || '');
 
   return {
     port,
@@ -69,5 +108,6 @@ export function loadConfig() {
     workerIdleBackoffMs,
     downloadMaxBytes,
     downloadTimeoutMs,
+    distributionTargets,
   };
 }
