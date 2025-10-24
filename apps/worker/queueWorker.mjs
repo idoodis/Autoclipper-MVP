@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 
 import { loadConfig } from '../config.mjs';
 import { createClip } from './clip.mjs';
+import { distributeOutputs, DistributionError } from '../../packages/distribution/index.mjs';
 import {
   initState,
   takeNextQueuedJob,
@@ -148,6 +149,12 @@ async function processJob(job, workerId) {
     projectRoot: process.cwd(),
     variantCount: job.variantCount,
   });
+  const distribution = await distributeOutputs(config.distributionTargets, job, {
+    clipPath: result.clipPath,
+    clipPaths: result.clipPaths,
+    captionsPath: result.captionsPath,
+    timelinePath: result.timelinePath,
+  });
   await finalizeJob(config.stateFile, job.id, {
     status: 'completed',
     availableAt: null,
@@ -158,11 +165,13 @@ async function processJob(job, workerId) {
       captions: result.captionsPath,
       timeline: result.timelinePath,
       durationSeconds: result.durationSeconds,
+      distribution,
     },
     metadata: {
       ...(job.metadata || {}),
       timeline: result.timeline,
       variants: result.variants,
+      distribution,
     },
   });
   console.log(`[worker-${workerId}] Job ${job.id} completed in ${result.durationSeconds.toFixed(2)}s of footage`);
@@ -180,6 +189,9 @@ async function handleJob(job, workerId) {
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof DistributionError && error.results) {
+      console.warn(`[worker-${workerId}] Distribution manifest: ${JSON.stringify(error.results)}`);
+    }
     const attempts = job.attempts || 1;
     const canRetry = attempts < config.workerMaxRetries + 1;
     if (canRetry) {

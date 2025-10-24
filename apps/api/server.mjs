@@ -11,9 +11,6 @@ import {
   getJob,
 } from '../../packages/state/index.mjs';
 
-const config = loadConfig();
-const stateReady = initState(config.stateFile);
-
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -40,6 +37,8 @@ async function readBody(req) {
 }
 
 export function createApiServer() {
+  const config = loadConfig();
+  const stateReady = initState(config.stateFile);
   const server = http.createServer(async (req, res) => {
     await stateReady;
     const { pathname } = parse(req.url || '/', true);
@@ -90,12 +89,16 @@ export function createApiServer() {
       const maxDuration = Number.isFinite(body.maxDurationSeconds)
         ? Math.max(5, Math.min(120, Number(body.maxDurationSeconds)))
         : 59;
+      const variantCount = Number.isFinite(body.variantCount)
+        ? Math.max(1, Math.min(5, Number(body.variantCount)))
+        : undefined;
       const job = await createJob(config.stateFile, {
         tenantId: tenant.id,
         sourceUri: body.sourceUri,
         watermarkText,
         maxDurationSeconds: maxDuration,
         metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : {},
+        variantCount,
       });
       return sendJson(res, 202, { job });
     }
